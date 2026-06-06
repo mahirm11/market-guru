@@ -2,3 +2,4 @@ node_modules/
 target/
 venv/
 __pycache__/
+.env

@@ -3,11 +3,13 @@ import time
 import json
 import random
 import requests
+# pyrefly: ignore [missing-import]
 from pydantic import BaseModel, Field
 from typing import Literal
 
 # pyrefly: ignore [missing-import]
 from google import genai
+# pyrefly: ignore [missing-import]
 from google.genai import types
 
 # 1. Structured prompt response schema definition
