@@ -3,29 +3,14 @@ import time
 import json
 import random
 import requests
-# pyrefly: ignore [missing-import]
-from pydantic import BaseModel, Field
-from typing import Literal
 
+# Direct API interactions to bypass local environment Pydantic middleman compilation issues
 # pyrefly: ignore [missing-import]
-from google import genai
+from google import genai  # type: ignore
 # pyrefly: ignore [missing-import]
-from google.genai import types
+from google.genai import types  # type: ignore
 
-# 1. Structured prompt response schema definition
-class TradeDecision(BaseModel):
-    action: Literal["BUY", "SELL", "HOLD"] = Field(
-        description="The trade action to take. Must be one of BUY, SELL, or HOLD."
-    )
-    quantity: int = Field(
-        default=1,
-        description="The number of units of the asset to trade. This must always be exactly 1."
-    )
-    rationale: str = Field(
-        description="A brief sentence explaining the reasoning behind the trade choice based on the agent's personality and the current market price."
-    )
-
-# 2. Define the agent profiles matching backend/spacetimedb/src/lib.rs
+# Define the agent profiles matching backend/spacetimedb/src/lib.rs
 AGENTS = {
     "agent_whale": {
         "name": "Gordon Gekko Bot",
@@ -44,7 +29,6 @@ AGENTS = {
 def get_db_name() -> str | None:
     """Read the deployed database name from the backend configuration."""
     try:
-        # Resolve path to backend/spacetime.local.json
         base_dir = os.path.dirname(os.path.abspath(__file__))
         path = os.path.join(base_dir, "..", "backend", "spacetime.local.json")
         if os.path.exists(path):
@@ -62,7 +46,6 @@ def get_market_price() -> int | None:
         response = requests.get(url, timeout=5)
         if response.status_code == 200:
             data = response.json()
-            # Support multiple possible row JSON structures returned by SpacetimeDB HTTP server
             if isinstance(data, list) and len(data) > 0:
                 row = data[0]
                 if isinstance(row, dict):
@@ -89,7 +72,6 @@ def call_reducer(reducer_name: str, agent_id: str, quantity: int) -> bool:
     payload = [agent_id, quantity]
     db_name = get_db_name()
     
-    # Try both standard SpacetimeDB endpoint structure and user-implied route structures
     urls = []
     if db_name:
         urls.append(f"http://127.0.0.1:3000/v1/database/{db_name}/call/{reducer_name}")
@@ -113,11 +95,11 @@ def call_reducer(reducer_name: str, agent_id: str, quantity: int) -> bool:
 def make_mock_decision() -> dict:
     """Generate a valid mocked trade decision if Gemini API credentials are not set."""
     action = random.choice(["BUY", "SELL", "HOLD"])
-    rationale = f"Mocked action chosen due to missing GEMINI_API_KEY environment variable."
+    rationale = "Mocked action chosen due to missing GEMINI_API_KEY environment variable."
     return {"action": action, "quantity": 1, "rationale": rationale}
 
 def get_gemini_decision(client: genai.Client, agent_id: str, profile: dict, price_cents: int) -> dict:
-    """Invoke the Gemini model to make a structured trade decision."""
+    """Invoke the Gemini model using a native JSON schema map to bypass Pydantic bugs."""
     price_dollars = price_cents / 100.0
     
     prompt = (
@@ -128,13 +110,34 @@ def get_gemini_decision(client: genai.Client, agent_id: str, profile: dict, pric
         f"Provide a brief rationale matching your personality."
     )
     
+    # Native API Dictionary Specification — Completely bypasses local validation library versions
+    native_json_schema = {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "enum": ["BUY", "SELL", "HOLD"],
+                "description": "The trade action to take. Must be one of BUY, SELL, or HOLD."
+            },
+            "quantity": {
+                "type": "INTEGER",
+                "description": "The number of units of the asset to trade. This must always be exactly 1."
+            },
+            "rationale": {
+                "type": "STRING",
+                "description": "A brief sentence explaining the reasoning behind the trade choice based on the agent's personality and market conditions."
+            }
+        },
+        "required": ["action", "quantity", "rationale"]
+    }
+    
     try:
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=TradeDecision,
+                response_json_schema=native_json_schema,
             ),
         )
         if response.text:
@@ -149,13 +152,19 @@ def main():
     print("MarketGuru AI-Worker Economic Simulation Loop (Phase 4)")
     print("=========================================================")
     
+    # Auto-load variable secrets locally if python-dotenv is present
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
+
     db_name = get_db_name()
     if db_name:
         print(f"[System] Local database detected: {db_name}")
     else:
         print("[System] No local database configured. Will use fallback routes.")
 
-    # Check for Gemini API key
     api_key = os.environ.get("GEMINI_API_KEY")
     client = None
     if api_key:
@@ -171,16 +180,13 @@ def main():
             print(f"\n--- Turn: {profile['name']} ({agent_id}) ---")
             
             try:
-                # 1. Fetch current price
                 price = get_market_price()
                 if price is None:
-                    # Default starting price fallback if server is down or unseeded
                     price = 1000
                     print(f"[System] Server offline or unseeded. Defaulting price to {price} cents ($10.00).")
                 else:
                     print(f"[Market] Current Unobtainium Price: {price} cents (${price / 100.0:.2f})")
 
-                # 2. Get trade decision
                 if client:
                     decision = get_gemini_decision(client, agent_id, profile, price)
                 else:
@@ -193,7 +199,6 @@ def main():
                 print(f"[Decision] Action: {action} | Qty: {quantity}")
                 print(f"[Rationale] {rationale}")
 
-                # 3. Hit POST reducer endpoint if action is BUY or SELL
                 if action == "BUY":
                     call_reducer("buy_asset", agent_id, quantity)
                 elif action == "SELL":
@@ -204,7 +209,6 @@ def main():
             except Exception as e:
                 print(f"[Agent Loop Error] Exception occurred during {agent_id}'s turn: {e}")
             
-            # Wait 5 seconds before the next agent's turn (market heartbeat)
             time.sleep(5)
 
 if __name__ == "__main__":
