@@ -157,6 +157,40 @@ export default function MarketDashboard() {
     }
   };
 
+  const handleDecommission = async (name: string) => {
+    // Instant UI state update
+    setAgents(prev => prev.filter(a => a.name !== name));
+    addLog('system', `Decommissioning agent "${name}"...`);
+
+    try {
+      if (isSimulated) {
+        addLog('system', `Decommissioned agent "${name}" (Simulated)`);
+      } else {
+        const res = await fetch('/v1/database/market-guru/call/delete_agent', {
+          method: 'POST',
+          body: JSON.stringify([name]),
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(errText || `HTTP ${res.status}`);
+        }
+
+        addLog('system', `Decommissioned agent "${name}" on Maincloud!`);
+        // Trigger immediate fetch to sync state
+        setFetchTrigger(prev => prev + 1);
+      }
+    } catch (err: any) {
+      console.error('Failed to decommission agent:', err);
+      addLog('system', `Failed to decommission agent "${name}": ${err.message}`);
+      // Revert immediate UI update by fetching again
+      setFetchTrigger(prev => prev + 1);
+    }
+  };
+
   // Robust parsers for SpacetimeDB SATS-JSON row formats
   const parseAgentRow = (rawRow: any): Agent | null => {
     if (!rawRow) return null;
@@ -731,6 +765,12 @@ export default function MarketDashboard() {
                       <div className="flex items-center gap-2">
                         {theme.icon}
                         <h4 className="text-sm font-semibold text-white tracking-wide">{agent.name}</h4>
+                        <button 
+                          onClick={() => handleDecommission(agent.name)}
+                          className="ml-2 px-1.5 py-0.5 text-[9px] bg-red-950 border border-red-800 text-red-300 rounded hover:bg-red-900 transition cursor-pointer"
+                        >
+                          Decommission
+                        </button>
                       </div>
                       <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-medium ${theme.accentColor}`}>
                         {theme.badgeText}

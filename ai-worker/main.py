@@ -7,9 +7,7 @@ import requests
 from dotenv import load_dotenv
 load_dotenv()
 
-# Direct API interactions to bypass local environment Pydantic middleman compilation issues
-from google import genai  # type: ignore
-from google.genai import types  # type: ignore
+from groq import Groq
 
 def get_all_agents() -> list:
     """POST request to execute SQL to retrieve all agent rows from the database."""
@@ -110,13 +108,13 @@ def call_reducer(reducer_name: str, agent_id: str, quantity: int) -> bool:
     return False
 
 def make_mock_decision() -> dict:
-    """Generate a valid mocked trade decision if Gemini API credentials are not set."""
+    """Generate a valid mocked trade decision if Groq API credentials are not set."""
     action = random.choice(["BUY", "SELL", "HOLD"])
-    rationale = "Mocked action chosen due to missing GEMINI_API_KEY environment variable."
+    rationale = "Mocked action chosen due to missing GROQ_API_KEY environment variable."
     return {"action": action, "quantity": 1, "rationale": rationale}
 
-def get_gemini_decision(client: genai.Client, agent_id: str, profile: dict, price_cents: int) -> dict:
-    """Invoke the Gemini model using a native JSON schema map to bypass Pydantic bugs."""
+def get_groq_decision(client: Groq, agent_id: str, profile: dict, price_cents: int) -> dict:
+    """Invoke the Groq API to request a trading decision using Llama 3.1 8B Instant."""
     price_dollars = price_cents / 100.0
     
     prompt = (
@@ -124,45 +122,28 @@ def get_gemini_decision(client: genai.Client, agent_id: str, profile: dict, pric
         f"'{profile['description']}'\n\n"
         f"Market status: The current price of Unobtainium is {price_cents} cents (${price_dollars:.2f}).\n\n"
         f"Determine your next action (BUY, SELL, or HOLD) for exactly 1 unit of Unobtainium.\n"
-        f"Provide a brief rationale matching your personality."
+        f"Provide a brief rationale matching your personality. Return your response in JSON format matching this schema:\n"
+        f"{{\n"
+        f"  \"action\": \"BUY\" | \"SELL\" | \"HOLD\",\n"
+        f"  \"quantity\": 1,\n"
+        f"  \"rationale\": \"string\"\n"
+        f"}}\n"
+        f"Make sure to return only valid JSON."
     )
     
-    # Native API Dictionary Specification — Completely bypasses local validation library versions
-    native_json_schema = {
-        "type": "OBJECT",
-        "properties": {
-            "action": {
-                "type": "STRING",
-                "enum": ["BUY", "SELL", "HOLD"],
-                "description": "The trade action to take. Must be one of BUY, SELL, or HOLD."
-            },
-            "quantity": {
-                "type": "INTEGER",
-                "description": "The number of units of the asset to trade. This must always be exactly 1."
-            },
-            "rationale": {
-                "type": "STRING",
-                "description": "A brief sentence explaining the reasoning behind the trade choice based on the agent's personality and market conditions."
-            }
-        },
-        "required": ["action", "quantity", "rationale"]
-    }
-    
     try:
-        response = client.models.generate_content(
-            model='gemini-2.5-flash-lite',
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_json_schema=native_json_schema,
-            ),
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
         )
-        if response.text:
-            return json.loads(response.text)
+        raw_json = response.choices[0].message.content
+        if raw_json:
+            return json.loads(raw_json)
     except Exception as e:
-        print(f"[Gemini Error] API call failed: {e}. Falling back to HOLD.")
+        print(f"[Groq Error] API call failed: {e}. Falling back to HOLD.")
     
-    return {"action": "HOLD", "quantity": 1, "rationale": "Fallback to HOLD due to Gemini API failure."}
+    return {"action": "HOLD", "quantity": 1, "rationale": "Fallback to HOLD due to Groq API failure."}
 
 def main():
     print("=========================================================")
@@ -182,13 +163,13 @@ def main():
     else:
         print("[System] No local database configured. Will use fallback routes.")
 
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = os.environ.get("GROQ_API_KEY")
     client = None
     if api_key:
-        print("[System] Initialize Google GenAI client.")
-        client = genai.Client()
+        print("[System] Initialize Groq client.")
+        client = Groq()
     else:
-        print("[System] WARNING: GEMINI_API_KEY not found. Running in MOCK trade mode.")
+        print("[System] WARNING: GROQ_API_KEY not found. Running in MOCK trade mode.")
 
     print("[System] Starting heartbeat simulation loop (heartbeat: 5 seconds)...")
     
@@ -197,7 +178,12 @@ def main():
         for agent in agents:
             agent_id = agent["agent_id"]
             print(f"\n--- Turn: {agent['name']} ({agent_id}) ---")
-            
+            # Mid-cycle check: verify if the agent still exists in the database
+            fresh_agents = get_all_agents()
+            if not any(a["agent_id"] == agent_id for a in fresh_agents):
+                print(f"[Info] Agent {agent['name']} ({agent_id}) was deleted. Skipping turn.")
+                continue
+                
             try:
                 price = get_market_price()
                 if price is None:
@@ -207,7 +193,7 @@ def main():
                     print(f"[Market] Current Unobtainium Price: {price} cents (${price / 100.0:.2f})")
 
                 if client:
-                    decision = get_gemini_decision(client, agent_id, agent, price)
+                    decision = get_groq_decision(client, agent_id, agent, price)
                 else:
                     decision = make_mock_decision()
                 

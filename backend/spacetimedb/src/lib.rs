@@ -153,3 +153,16 @@ pub fn sell_asset(ctx: &ReducerContext, agent_id: String, quantity: u32) -> Resu
     Ok(())
 }
 
+#[spacetimedb::reducer]
+pub fn delete_agent(ctx: &ReducerContext, name: String) -> Result<(), String> {
+    let agent = ctx.db.agent().iter().find(|a| a.name == name);
+    if let Some(a) = agent {
+        ctx.db.agent().agent_id().delete(a.agent_id.clone());
+        log::info!("DECOMMISSION SUCCESS: Agent {} deleted", name);
+        Ok(())
+    } else {
+        Err(format!("Agent {} not found", name))
+    }
+}
+
+
