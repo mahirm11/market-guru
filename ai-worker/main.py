@@ -4,30 +4,51 @@ import json
 import random
 import requests
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # Direct API interactions to bypass local environment Pydantic middleman compilation issues
-# pyrefly: ignore [missing-import]
 from google import genai  # type: ignore
-# pyrefly: ignore [missing-import]
 from google.genai import types  # type: ignore
 
-# Define the agent profiles matching backend/spacetimedb/src/lib.rs
-AGENTS = {
-    "agent_whale": {
-        "name": "Gordon Gekko Bot",
-        "description": "An aggressive market whale who has a high starting balance, trades aggressively, and seeks to drive the price up by buying when possible."
-    },
-    "agent_panic": {
-        "name": "Paper Hands Bot",
-        "description": "A risk-averse panic seller who starts with a large inventory. They panic-sell immediately at any sign of stability or high prices to lock in cash, fearing drops."
-    },
-    "agent_chaos": {
-        "name": "Chaos Monkey Bot",
-        "description": "A completely unpredictable agent who trades erratically. They act on random whims, ignoring standard financial logic."
-    }
-}
+def get_all_agents() -> list:
+    """POST request to execute SQL to retrieve all agent rows from the database."""
+    db_name = get_db_name()
+    if not db_name:
+        db_name = "market-guru"
+        
+    sdb_url = os.environ.get("SPACETIMEDB_URL", "http://127.0.0.1:3000").rstrip("/")
+    url = f"{sdb_url}/v1/database/{db_name}/sql"
+    try:
+        response = requests.post(url, data="SELECT agent_id, name, prompt FROM agent", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            if data and isinstance(data, list) and len(data) > 0:
+                rows = data[0].get("rows", [])
+                agents = []
+                for row in rows:
+                    agents.append({
+                        "agent_id": str(row[0]),
+                        "name": str(row[1]),
+                        "description": str(row[2])
+                    })
+                return agents
+        else:
+            print(f"[System] SQL endpoint error: HTTP {response.status_code}: {response.text}")
+    except Exception as e:
+        print(f"[System] Failed to fetch agents from database: {e}")
+    
+    # Fallback to local hardcoded defaults if offline
+    return [
+        {"agent_id": "agent_whale", "name": "Gordon Gekko Bot", "description": "An aggressive market whale who has a high starting balance, trades aggressively, and seeks to drive the price up by buying when possible."},
+        {"agent_id": "agent_panic", "name": "Paper Hands Bot", "description": "A risk-averse panic seller who starts with a large inventory. They panic-sell immediately at any sign of stability or high prices to lock in cash, fearing drops."},
+        {"agent_id": "agent_chaos", "name": "Chaos Monkey Bot", "description": "A completely unpredictable agent who trades erratically. They act on random whims, ignoring standard financial logic."}
+    ]
 
 def get_db_name() -> str | None:
-    """Read the deployed database name from the backend configuration."""
+    """Read the deployed database name from the environment or backend configuration."""
+    if db_name := os.environ.get("SPACETIMEDB_DB_NAME"):
+        return db_name
     try:
         base_dir = os.path.dirname(os.path.abspath(__file__))
         path = os.path.join(base_dir, "..", "backend", "spacetime.local.json")
@@ -40,31 +61,26 @@ def get_db_name() -> str | None:
     return None
 
 def get_market_price() -> int | None:
-    """GET request to retrieve the current market price of Unobtainium in cents."""
-    url = "http://127.0.0.1:3000/api/v1/tables/market/rows"
+    """POST request to execute SQL to retrieve the current market price of Unobtainium in cents."""
+    db_name = get_db_name()
+    
+    # If the local config file hasn't written the name yet, fall back to our known name
+    if not db_name:
+        db_name = "market-guru"
+    sdb_url = os.environ.get("SPACETIMEDB_URL", "http://127.0.0.1:3000").rstrip("/")
+    url = f"{sdb_url}/v1/database/{db_name}/sql"
     try:
-        response = requests.get(url, timeout=5)
+        response = requests.post(url, data="SELECT current_price FROM market LIMIT 1", timeout=5)
         if response.status_code == 200:
             data = response.json()
-            if isinstance(data, list) and len(data) > 0:
-                row = data[0]
-                if isinstance(row, dict):
-                    return row.get("current_price")
-                elif isinstance(row, list) and len(row) > 1:
-                    return row[1]
-            elif isinstance(data, dict):
-                rows = data.get("rows")
-                if rows and isinstance(rows, list) and len(rows) > 0:
-                    row = rows[0]
-                    if isinstance(row, dict):
-                        return row.get("current_price")
-                    elif isinstance(row, list) and len(row) > 1:
-                        return row[1]
-            print(f"[System] Warning: Unrecognized market price JSON structure: {data}")
+            if data and isinstance(data, list) and len(data) > 0:
+                rows = data[0].get("rows", [])
+                if rows and len(rows) > 0:
+                    return int(rows[0][0])
         else:
-            print(f"[System] Failed to fetch market price. HTTP Status: {response.status_code}")
+            print(f"[System] SQL endpoint error: HTTP {response.status_code}: {response.text}")
     except Exception as e:
-        print(f"[System] Error hitting market rows endpoint: {e}")
+        print(f"[System] Failed to fetch market price: {e}")
     return None
 
 def call_reducer(reducer_name: str, agent_id: str, quantity: int) -> bool:
@@ -72,10 +88,11 @@ def call_reducer(reducer_name: str, agent_id: str, quantity: int) -> bool:
     payload = [agent_id, quantity]
     db_name = get_db_name()
     
+    sdb_url = os.environ.get("SPACETIMEDB_URL", "http://127.0.0.1:3000").rstrip("/")
     urls = []
     if db_name:
-        urls.append(f"http://127.0.0.1:3000/v1/database/{db_name}/call/{reducer_name}")
-    urls.append(f"http://127.0.0.1:3000/api/v1/reducers/{reducer_name}")
+        urls.append(f"{sdb_url}/v1/database/{db_name}/call/{reducer_name}")
+    urls.append(f"{sdb_url}/api/v1/reducers/{reducer_name}")
     
     last_err = None
     for url in urls:
@@ -133,7 +150,7 @@ def get_gemini_decision(client: genai.Client, agent_id: str, profile: dict, pric
     
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-2.5-flash-lite',
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -176,8 +193,10 @@ def main():
     print("[System] Starting heartbeat simulation loop (heartbeat: 5 seconds)...")
     
     while True:
-        for agent_id, profile in AGENTS.items():
-            print(f"\n--- Turn: {profile['name']} ({agent_id}) ---")
+        agents = get_all_agents()
+        for agent in agents:
+            agent_id = agent["agent_id"]
+            print(f"\n--- Turn: {agent['name']} ({agent_id}) ---")
             
             try:
                 price = get_market_price()
@@ -188,7 +207,7 @@ def main():
                     print(f"[Market] Current Unobtainium Price: {price} cents (${price / 100.0:.2f})")
 
                 if client:
-                    decision = get_gemini_decision(client, agent_id, profile, price)
+                    decision = get_gemini_decision(client, agent_id, agent, price)
                 else:
                     decision = make_mock_decision()
                 
@@ -204,7 +223,7 @@ def main():
                 elif action == "SELL":
                     call_reducer("sell_asset", agent_id, quantity)
                 else:
-                    print(f"[Info] {profile['name']} decided to HOLD. No transaction executed.")
+                    print(f"[Info] {agent['name']} decided to HOLD. No transaction executed.")
                     
             except Exception as e:
                 print(f"[Agent Loop Error] Exception occurred during {agent_id}'s turn: {e}")
