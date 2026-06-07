@@ -430,7 +430,7 @@ export default function MarketDashboard({ username = 'operator_unknown', onLogou
         });
         const thoughtRes = await fetch('/v1/database/market-guru/sql', {
           method: 'POST',
-          body: 'SELECT * FROM agent_thought ORDER BY id DESC LIMIT 200',
+          body: 'SELECT * FROM agent_thought',
           headers: { 'Content-Type': 'text/plain' }
         });
         
@@ -457,7 +457,9 @@ export default function MarketDashboard({ username = 'operator_unknown', onLogou
 
         const parsedMarket = rawMarketRows.map(parseMarketRow).filter(Boolean) as Market[];
         const parsedAgents = rawAgentRows.map(parseAgentRow).filter(Boolean) as Agent[];
-        const parsedThoughts = rawThoughtRows.map(parseThoughtRow).filter(Boolean) as AgentThought[];
+        const parsedThoughts = (rawThoughtRows.map(parseThoughtRow).filter(Boolean) as AgentThought[])
+          .sort((a, b) => b.id - a.id)
+          .slice(0, 200);
 
         if (parsedMarket.length === 0) {
           throw new Error('No valid market data returned');
