@@ -18,7 +18,7 @@ def get_spacetimedb_url() -> str:
 def get_db_name() -> str:
     """Read the deployed database name from the environment variable."""
     # Hardcoded fallback to your cloud database name so it can NEVER use local mode
-    return os.environ.get("SPACETIMEDB_DB_NAME", "market-box")
+    return os.environ.get("SPACETIMEDB_DB_NAME", "market-guru")
 
 def get_all_agents() -> list:
     """POST request to execute SQL to retrieve all agent rows from the database."""

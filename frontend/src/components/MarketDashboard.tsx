@@ -586,8 +586,14 @@ export default function MarketDashboard({ username = 'operator_unknown', onLogou
         
         setAgents(prevAgents => {
           if (prevAgents.length === 0) return [];
-          // Select a random agent to make a trade
-          const agentIndex = Math.floor(Math.random() * prevAgents.length);
+          // Select a random active (non-paused) agent to make a trade
+          const activeAgents = prevAgents.filter(a => !a.is_paused);
+          if (activeAgents.length === 0) return prevAgents;
+          
+          const randomActiveAgent = activeAgents[Math.floor(Math.random() * activeAgents.length)];
+          const agentIndex = prevAgents.findIndex(a => a.agent_id === randomActiveAgent.agent_id);
+          if (agentIndex === -1) return prevAgents;
+          
           const agent = { ...prevAgents[agentIndex] };
           const newAgents = [...prevAgents];
           
@@ -1177,7 +1183,7 @@ export default function MarketDashboard({ username = 'operator_unknown', onLogou
               <div className="flex items-baseline gap-2 mt-2">
                 <h2 className={`text-xl ${theme.monoText}`}>{formatUSD(unobtainiumPrice)}</h2>
                 <div className={`text-xs font-mono font-bold tracking-tighter ${priceChange.isPositive ? 'text-emerald-400' : 'text-rose-500'}`}>
-                  {priceChange.isPositive ? '+' : ''}{priceChange.value}
+                  {priceChange.value}
                 </div>
               </div>
               <p className="text-[9px] text-gray-500 mt-1.5 font-mono">
