@@ -18,7 +18,7 @@ def get_all_agents() -> list:
     sdb_url = os.environ.get("SPACETIMEDB_URL", "http://127.0.0.1:3000").rstrip("/")
     url = f"{sdb_url}/v1/database/{db_name}/sql"
     try:
-        response = requests.post(url, data="SELECT agent_id, name, prompt FROM agent", timeout=5)
+        response = requests.post(url, data="SELECT agent_id, name, prompt, is_paused FROM agent", timeout=5)
         if response.status_code == 200:
             data = response.json()
             if data and isinstance(data, list) and len(data) > 0:
@@ -28,7 +28,8 @@ def get_all_agents() -> list:
                     agents.append({
                         "agent_id": str(row[0]),
                         "name": str(row[1]),
-                        "description": str(row[2])
+                        "description": str(row[2]),
+                        "is_paused": bool(row[3]) if len(row) > 3 else False
                     })
                 return agents
         else:
@@ -38,9 +39,9 @@ def get_all_agents() -> list:
     
     # Fallback to local hardcoded defaults if offline
     return [
-        {"agent_id": "agent_whale", "name": "Gordon Gekko Bot", "description": "An aggressive market whale who has a high starting balance, trades aggressively, and seeks to drive the price up by buying when possible."},
-        {"agent_id": "agent_panic", "name": "Paper Hands Bot", "description": "A risk-averse panic seller who starts with a large inventory. They panic-sell immediately at any sign of stability or high prices to lock in cash, fearing drops."},
-        {"agent_id": "agent_chaos", "name": "Chaos Monkey Bot", "description": "A completely unpredictable agent who trades erratically. They act on random whims, ignoring standard financial logic."}
+        {"agent_id": "agent_whale", "name": "Gordon Gekko Bot", "is_paused": False, "description": "An aggressive market whale who has a high starting balance, trades aggressively, and seeks to drive the price up by buying when possible."},
+        {"agent_id": "agent_panic", "name": "Paper Hands Bot", "is_paused": False, "description": "A risk-averse panic seller who starts with a large inventory. They panic-sell immediately at any sign of stability or high prices to lock in cash, fearing drops."},
+        {"agent_id": "agent_chaos", "name": "Chaos Monkey Bot", "is_paused": False, "description": "A completely unpredictable agent who trades erratically. They act on random whims, ignoring standard financial logic."}
     ]
 
 def get_db_name() -> str | None:
@@ -107,6 +108,35 @@ def call_reducer(reducer_name: str, agent_id: str, quantity: int) -> bool:
     print(f"[Tx Failed] Reducer {reducer_name} failed for {agent_id}: {last_err}")
     return False
 
+def call_record_agent_thought(agent_id: str, action: str, rationale: str) -> bool:
+    """POST request to call SpacetimeDB record_agent_thought reducer."""
+    payload = [agent_id, action, rationale]
+    db_name = get_db_name()
+    if not db_name:
+        db_name = "market-guru"
+        
+    sdb_url = os.environ.get("SPACETIMEDB_URL", "http://127.0.0.1:3000").rstrip("/")
+    urls = []
+    if db_name:
+        urls.append(f"{sdb_url}/v1/database/{db_name}/call/record_agent_thought")
+    urls.append(f"{sdb_url}/api/v1/reducers/record_agent_thought")
+    
+    last_err = None
+    for url in urls:
+        try:
+            response = requests.post(url, json=payload, timeout=5)
+            if response.status_code == 200:
+                print(f"[Tx Success] Called record_agent_thought({agent_id}, {action}) -> 200 OK")
+                return True
+            else:
+                last_err = f"HTTP {response.status_code}: {response.text}"
+        except Exception as e:
+            last_err = str(e)
+            
+    print(f"[Tx Failed] record_agent_thought failed for {agent_id}: {last_err}")
+    return False
+
+
 def make_mock_decision() -> dict:
     """Generate a valid mocked trade decision if Groq API credentials are not set."""
     action = random.choice(["BUY", "SELL", "HOLD"])
@@ -147,7 +177,7 @@ def get_groq_decision(client: Groq, agent_id: str, profile: dict, price_cents: i
 
 def main():
     print("=========================================================")
-    print("MarketGuru AI-Worker Economic Simulation Loop (Phase 4)")
+    print("MarketBox AI-Worker Economic Simulation Loop (Phase 4)")
     print("=========================================================")
     
     # Auto-load variable secrets locally if python-dotenv is present
@@ -183,6 +213,13 @@ def main():
             if not any(a["agent_id"] == agent_id for a in fresh_agents):
                 print(f"[Info] Agent {agent['name']} ({agent_id}) was deleted. Skipping turn.")
                 continue
+
+            # Pause check: skip the turn if the agent has been paused via the UI
+            fresh_agent = next((a for a in fresh_agents if a["agent_id"] == agent_id), None)
+            if fresh_agent and fresh_agent.get("is_paused", False):
+                print(f"[Paused] Agent {agent['name']} ({agent_id}) is paused. Skipping turn.")
+                time.sleep(5)
+                continue
                 
             try:
                 price = get_market_price()
@@ -203,6 +240,9 @@ def main():
                 
                 print(f"[Decision] Action: {action} | Qty: {quantity}")
                 print(f"[Rationale] {rationale}")
+
+                # Record agent thought process in database
+                call_record_agent_thought(agent_id, action, rationale)
 
                 if action == "BUY":
                     call_reducer("buy_asset", agent_id, quantity)

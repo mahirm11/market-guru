@@ -1,6 +1,7 @@
-use spacetimedb::{ReducerContext, Table};
+use spacetimedb::{ReducerContext, Table, Timestamp};
 
 #[spacetimedb::table(accessor = agent, public)]
+#[derive(Clone)]
 pub struct Agent {
     #[primary_key]
     pub agent_id: String,      // The unique ID for each bot (e.g., "bot_whale")
@@ -8,6 +9,21 @@ pub struct Agent {
     pub cash_balance: u64,     // We store money as integers (cents) so we don't get floating-point errors!
     pub inventory: u32,        // How much Unobtainium they own
     pub prompt: String,        // Custom personality trading prompt for LLM decision making
+    pub avatar_id: String,     // Selected avatar identifier
+    #[default(false)]
+    pub is_paused: bool,       // When true the AI worker skips this agent's decision turn
+}
+
+#[spacetimedb::table(accessor = agent_thought, public)]
+#[derive(Clone)]
+pub struct AgentThought {
+    #[primary_key]
+    #[auto_inc]
+    pub id: u64,
+    pub agent_id: String,
+    pub action: String,
+    pub rationale: String,
+    pub created_at: Timestamp,
 }
 
 #[spacetimedb::table(accessor = market, public)]
@@ -32,6 +48,8 @@ pub fn init_world(ctx: &ReducerContext) {
         cash_balance: 500000, // $5,000.00 to start throwing around
         inventory: 0,
         prompt: "An aggressive market whale who has a high starting balance, trades aggressively, and seeks to drive the price up by buying when possible.".to_string(),
+        avatar_id: "whale".to_string(),
+        is_paused: false,
     });
 
     // Agent 2: The risk-averse panic seller
@@ -41,6 +59,8 @@ pub fn init_world(ctx: &ReducerContext) {
         cash_balance: 100000, // $1,000.00
         inventory: 50,       // Starts with lots of assets to panic-sell later
         prompt: "A risk-averse panic seller who starts with a large inventory. They panic-sell immediately at any sign of stability or high prices to lock in cash, fearing drops.".to_string(),
+        avatar_id: "panic".to_string(),
+        is_paused: false,
     });
 
     // Agent 3: The completely unpredictable agent
@@ -50,11 +70,13 @@ pub fn init_world(ctx: &ReducerContext) {
         cash_balance: 200000, // $2,000.00
         inventory: 10,
         prompt: "A completely unpredictable agent who trades erratically. They act on random whims, ignoring standard financial logic.".to_string(),
+        avatar_id: "chaos".to_string(),
+        is_paused: false,
     });
 }
 
 #[spacetimedb::reducer]
-pub fn spawn_agent(ctx: &ReducerContext, agent_id: String, name: String, prompt: String) -> Result<(), String> {
+pub fn spawn_agent(ctx: &ReducerContext, agent_id: String, name: String, prompt: String, avatar_id: String) -> Result<(), String> {
     // Standard initialization values
     let cash_balance = 250000; // $2,500.00 starting balance
     let inventory = 5;         // Starts with 5 units of asset
@@ -70,6 +92,8 @@ pub fn spawn_agent(ctx: &ReducerContext, agent_id: String, name: String, prompt:
         cash_balance,
         inventory,
         prompt,
+        avatar_id,
+        is_paused: false,
     });
     
     log::info!("SPAWN SUCCESS: Custom agent successfully initialized");
@@ -89,6 +113,11 @@ pub fn buy_asset(ctx: &ReducerContext, agent_id: String, quantity: u32) -> Resul
         Some(a) => a,
         None => return Err(format!("Agent {} not found", agent_id)),
     };
+
+    // Guard: skip paused agents
+    if agent.is_paused {
+        return Err(format!("Trade Aborted: Agent {} is currently paused", agent.name));
+    }
 
     // Financial math: Calculate the total cost of the buy order
     let total_cost = market.current_price * (quantity as u64);
@@ -123,6 +152,11 @@ pub fn sell_asset(ctx: &ReducerContext, agent_id: String, quantity: u32) -> Resu
         Some(a) => a,
         None => return Err(format!("Agent {} not found", agent_id)),
     };
+
+    // Guard: skip paused agents
+    if agent.is_paused {
+        return Err(format!("Trade Aborted: Agent {} is currently paused", agent.name));
+    }
 
     // Concurrency & Integrity Guard: Does the bot actually have the items to sell?
     if agent.inventory < quantity {
@@ -165,4 +199,62 @@ pub fn delete_agent(ctx: &ReducerContext, name: String) -> Result<(), String> {
     }
 }
 
+#[spacetimedb::reducer]
+pub fn toggle_agent_pause(ctx: &ReducerContext, agent_id: String) -> Result<(), String> {
+    let mut agent = match ctx.db.agent().agent_id().find(agent_id.clone()) {
+        Some(a) => a,
+        None => return Err(format!("Agent {} not found", agent_id)),
+    };
 
+    agent.is_paused = !agent.is_paused;
+    ctx.db.agent().agent_id().update(agent.clone());
+
+    let state = if agent.is_paused { "PAUSED" } else { "RESUMED" };
+    log::info!("AGENT {}: {} ({})", state, agent.name, agent_id);
+    Ok(())
+}
+
+#[spacetimedb::reducer]
+pub fn pause_all_agents(ctx: &ReducerContext) -> Result<(), String> {
+    for mut agent in ctx.db.agent().iter() {
+        if !agent.is_paused {
+            agent.is_paused = true;
+            ctx.db.agent().agent_id().update(agent);
+        }
+    }
+    log::info!("ALL AGENTS PAUSED");
+    Ok(())
+}
+
+#[spacetimedb::reducer]
+pub fn resume_all_agents(ctx: &ReducerContext) -> Result<(), String> {
+    for mut agent in ctx.db.agent().iter() {
+        if agent.is_paused {
+            agent.is_paused = false;
+            ctx.db.agent().agent_id().update(agent);
+        }
+    }
+    log::info!("ALL AGENTS RESUMED");
+    Ok(())
+}
+
+#[spacetimedb::reducer]
+pub fn record_agent_thought(
+    ctx: &ReducerContext,
+    agent_id: String,
+    action: String,
+    rationale: String,
+) -> Result<(), String> {
+    if ctx.db.agent().agent_id().find(agent_id.clone()).is_none() {
+        return Err(format!("Agent {} not found", agent_id));
+    }
+
+    ctx.db.agent_thought().insert(AgentThought {
+        id: 0,
+        agent_id,
+        action,
+        rationale,
+        created_at: ctx.timestamp,
+    });
+    Ok(())
+}
